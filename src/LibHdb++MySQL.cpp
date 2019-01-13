@@ -20,6 +20,21 @@
 //
 //=============================================================================
 
+#if defined(_WIN32) || defined(WIN32)	// #ifdef _TG_WINDOWS_
+// WinSock2.h must included before "tango.h" (Windows.h), 
+// or many redefinitions error!!!
+#include <WinSock2.h>
+#include <Ws2tcpip.h>
+#ifdef interface
+#undef interface
+// "interface" conflict with tango/include/dintrthread.h "struct _ShDevIntrTh"
+// but i cannot find it's define in windows or msvc header files
+// any side effect ??
+#endif
+#else
+#include <netdb.h> //for getaddrinfo
+#endif
+
 #include "LibHdb++MySQL.h"
 #include <stdlib.h>
 #include <mysql.h>
@@ -27,7 +42,7 @@
 #include <sstream>
 #include <iomanip>
 #include <cmath>
-#include <netdb.h> //for getaddrinfo
+
 
 #define MYSQL_ERROR		"Mysql Error"
 #define CONFIG_ERROR	"Configuration Error"
@@ -35,6 +50,9 @@
 #define DATA_ERROR		"Data Error"
 
 #ifndef LIB_BUILDTIME
+#ifdef _TG_WINDOWS_
+#define RELEASE "HeadURL"	// RELEASE defined in Makefile for linux
+#endif
 #define LIB_BUILDTIME   RELEASE " " __DATE__ " "  __TIME__
 #endif
 
@@ -465,7 +483,7 @@ int HdbPPMySQL::find_last_event(int ID, string &event)
 
 int HdbPPMySQL::find_err_id(string err, int &ERR_ID)
 {
-	char err_escaped[2 * err.length() + 1];
+	char *err_escaped = new char[2 * err.length() + 1];
 	mysql_escape_string(err_escaped, err.c_str(), err.length());
 	ostringstream query_str;
 	//string facility_no_domain = remove_domain(facility);
@@ -473,6 +491,7 @@ int HdbPPMySQL::find_err_id(string err, int &ERR_ID)
 	query_str <<
 		"SELECT " << ERR_COL_ID << " FROM " << m_dbname << "." << ERR_TABLE_NAME <<
 			" WHERE " << ERR_COL_ERROR_DESC << " = '" << err_escaped << "'";
+	delete [] err_escaped;
 
 	if(mysql_query(dbp, query_str.str().c_str()))
 	{
@@ -1239,14 +1258,14 @@ void HdbPPMySQL::configure_Attr(string name, int type/*DEV_DOUBLE, DEV_STRING, .
 
 	//add domain name to fqdn
 	name = string("tango://")+facility+string("/")+attr_name;
-	char name_escaped[2 * name.length() + 1];
+	char *name_escaped = new char[2 * name.length() + 1];
 	mysql_escape_string(name_escaped, name.c_str(), name.length());
 
 	vector<string> exploded_name;
 	string_explode(attr_name,"/",&exploded_name);
 
 	string complete_facility=string("tango://")+facility;
-	char complete_facility_escaped[2 * complete_facility.length() + 1];
+	char *complete_facility_escaped = new char[2 * complete_facility.length() + 1];
 	mysql_escape_string(complete_facility_escaped, complete_facility.c_str(), complete_facility.length());
 
 	string domain="";
@@ -1264,13 +1283,13 @@ void HdbPPMySQL::configure_Attr(string name, int type/*DEV_DOUBLE, DEV_STRING, .
 	{
 		cout<< __func__ << ": FAILED to explode " << attr_name << " into 4 fields, result is " << exploded_name.size() << endl;
 	}
-	char domain_escaped[2 * domain.length() + 1];
+	char *domain_escaped = new char[2 * domain.length() + 1];
 	mysql_escape_string(domain_escaped, domain.c_str(), domain.length());
-	char family_escaped[2 * family.length() + 1];
+	char *family_escaped = new char[2 * family.length() + 1];
 	mysql_escape_string(family_escaped, family.c_str(), family.length());
-	char member_escaped[2 * member.length() + 1];
+	char *member_escaped = new char[2 * member.length() + 1];
 	mysql_escape_string(member_escaped, member.c_str(), member.length());
-	char last_name_escaped[2 * last_name.length() + 1];
+	char *last_name_escaped = new char[2 * last_name.length() + 1];
 	mysql_escape_string(last_name_escaped, last_name.c_str(), last_name.length());
 
 	insert_str <<
@@ -1279,6 +1298,12 @@ void HdbPPMySQL::configure_Attr(string name, int type/*DEV_DOUBLE, DEV_STRING, .
 			" SELECT '" << name_escaped << "'," << CONF_TYPE_COL_TYPE_ID << "," << ttl <<
 			",'"<<complete_facility_escaped<<"','"<<domain_escaped<<"','"<<family_escaped<<"','"<<member_escaped<<"','"<<last_name_escaped<<"'"<<
 			" FROM " << m_dbname << "." << CONF_TYPE_TABLE_NAME << " WHERE " << CONF_TYPE_COL_TYPE << " = '" << data_type << "'";
+	delete [] name_escaped;
+	delete [] complete_facility_escaped;
+	delete [] domain_escaped;
+	delete [] family_escaped;
+	delete [] member_escaped;
+	delete [] last_name_escaped;
 
 	if(mysql_query(dbp, insert_str.str().c_str()))
 	{
@@ -1879,15 +1904,20 @@ template <typename Type> void HdbPPMySQL::store_array(string attr, vector<Type> 
 	int param_count = param_count_single*insert_size;								//total param
 	MYSQL_STMT	*pstmt;
 	MYSQL_BIND	*plog_bind = new MYSQL_BIND[param_count];
-	my_bool		is_null[3*insert_size];    /* value nullability */	//value_r, value_w, error_desc_id
+	my_bool		*is_null = new my_bool[3*insert_size];    /* value nullability */	//value_r, value_w, error_desc_id
 	my_bool		is_unsigned=_is_unsigned;    /* value unsigned */
-	double		double_data[2*insert_size];	// rcv_time, ev_time
-	Type		value_data[2*insert_size];		//value_r, value_w
-	int		int_data[8*insert_size];		//id, quality, error_desc_id, idx, dimx_r, dimy_r, dimx_w, dimy_w,
+	double		*double_data = new double[2*insert_size];	// rcv_time, ev_time
+	Type		*value_data =new Type[2*insert_size];		//value_r, value_w
+	int		*int_data = new int[8*insert_size];		//id, quality, error_desc_id, idx, dimx_r, dimy_r, dimx_w, dimy_w,
 	pstmt = mysql_stmt_init(dbp);
 	if (!pstmt)
 	{
 		cout << __func__<< ": mysql_stmt_init(), out of memory" << endl;
+		delete [] is_null;
+		delete [] double_data;
+		delete [] value_data;
+		delete [] int_data;
+		delete [] plog_bind;
 		Tango::Except::throw_exception(QUERY_ERROR,"mysql_stmt_init(): out of memory",__func__);
 	}
 	if (mysql_stmt_prepare(pstmt, query_str.str().c_str(), query_str.str().length()))
@@ -1895,6 +1925,11 @@ template <typename Type> void HdbPPMySQL::store_array(string attr, vector<Type> 
 		stringstream tmp;
 		tmp << "mysql_stmt_prepare(), prepare stmt failed, stmt='"<<query_str.str()<<"', err="<<mysql_stmt_error(pstmt);
 		cout << __func__<< ": " << tmp.str() << endl;
+		delete [] is_null;
+		delete [] double_data;
+		delete [] value_data;
+		delete [] int_data;
+		delete [] plog_bind;
 		Tango::Except::throw_exception(QUERY_ERROR,tmp.str(),__func__);
 	}
 	memset(plog_bind, 0, sizeof(MYSQL_BIND)*param_count);
@@ -2176,6 +2211,11 @@ template <typename Type> void HdbPPMySQL::store_array(string attr, vector<Type> 
 		stringstream tmp;
 		tmp << "mysql_stmt_bind_param() failed" << ", err=" << mysql_stmt_error(pstmt);
 		cout << __func__<< ": " << tmp.str() << endl;
+		delete [] is_null;
+		delete [] double_data;
+		delete [] value_data;
+		delete [] int_data;
+		delete [] plog_bind;
 		Tango::Except::throw_exception(QUERY_ERROR,tmp.str(),__func__);
 	}
 
@@ -2186,6 +2226,10 @@ template <typename Type> void HdbPPMySQL::store_array(string attr, vector<Type> 
 		cout << __func__<< ": " << tmp.str() << endl;
 		if (mysql_stmt_close(pstmt))
 			cout << __func__<< ": failed while closing the statement" << ", err=" << mysql_stmt_error(pstmt) << endl;
+		delete [] is_null;
+		delete [] double_data;
+		delete [] value_data;
+		delete [] int_data;
 		delete [] plog_bind;
 		Tango::Except::throw_exception(QUERY_ERROR,tmp.str(),__func__);
 	}
@@ -2202,9 +2246,17 @@ template <typename Type> void HdbPPMySQL::store_array(string attr, vector<Type> 
 		stringstream tmp;
 		tmp << "failed while closing the statement" << ", err=" << mysql_stmt_error(pstmt);
 		cout << __func__<< ": " << tmp.str() << endl;
+		delete [] is_null;
+		delete [] double_data;
+		delete [] value_data;
+		delete [] int_data;
 		delete [] plog_bind;
 		Tango::Except::throw_exception(QUERY_ERROR,tmp.str(),__func__);
 	}
+	delete [] is_null;
+	delete [] double_data;
+	delete [] value_data;
+	delete [] int_data;
 	delete [] plog_bind;
 	
 	inserted_num += insert_size;
@@ -3008,15 +3060,21 @@ void HdbPPMySQL::store_array_string(string attr, vector<string> value_r, vector<
 	int param_count = param_count_single*max_size;								//total param
 	MYSQL_STMT	*pstmt;
 	MYSQL_BIND	*plog_bind = new MYSQL_BIND[param_count];
-	my_bool		is_null[3*max_size];    /* value nullability */	//value_r, value_w
-	double		double_data[2*max_size];	// rcv_time, ev_time
-	string		value_data[2*max_size];		//value_r, value_w
-	unsigned long value_data_len[2*max_size];
-	int			int_data[8*max_size];		//id, quality, error_desc_id, idx, dimx_r, dimy_r, dimx_w, dimy_w
+	my_bool		*is_null = new my_bool[3*max_size];    /* value nullability */	//value_r, value_w
+	double		*double_data = new double[2*max_size];	// rcv_time, ev_time
+	string		*value_data = new string[2*max_size];		//value_r, value_w
+	unsigned long *value_data_len = new unsigned long[2*max_size];
+	int			*int_data =new int[8*max_size];		//id, quality, error_desc_id, idx, dimx_r, dimy_r, dimx_w, dimy_w
 	pstmt = mysql_stmt_init(dbp);
 	if (!pstmt)
 	{
 		cout << __func__<< ": mysql_stmt_init(), out of memory" << endl;
+		delete [] is_null;
+		delete [] double_data;
+		delete [] value_data;
+		delete [] value_data_len;
+		delete [] int_data;
+		delete [] plog_bind;
 		Tango::Except::throw_exception(QUERY_ERROR,"mysql_stmt_init(): out of memory",__func__);
 	}
 	if (mysql_stmt_prepare(pstmt, query_str.str().c_str(), query_str.str().length()))
@@ -3024,6 +3082,12 @@ void HdbPPMySQL::store_array_string(string attr, vector<string> value_r, vector<
 		stringstream tmp;
 		tmp << "mysql_stmt_prepare(), prepare stmt failed, stmt='"<<query_str.str()<<"' err="<<mysql_stmt_error(pstmt);
 		cout << __func__<< ": " << tmp.str() << endl;
+		delete [] is_null;
+		delete [] double_data;
+		delete [] value_data;
+		delete [] value_data_len;
+		delete [] int_data;
+		delete [] plog_bind;
 		Tango::Except::throw_exception(QUERY_ERROR,tmp.str(),__func__);
 	}
 	memset(plog_bind, 0, sizeof(MYSQL_BIND)*param_count);
@@ -3170,6 +3234,12 @@ void HdbPPMySQL::store_array_string(string attr, vector<string> value_r, vector<
 		stringstream tmp;
 		tmp << "mysql_stmt_bind_param() failed" << ", err=" << mysql_stmt_error(pstmt);
 		cout << __func__<< ": " << tmp.str() << endl;
+		delete [] is_null;
+		delete [] double_data;
+		delete [] value_data;
+		delete [] value_data_len;
+		delete [] int_data;
+		delete [] plog_bind;
 		Tango::Except::throw_exception(QUERY_ERROR,tmp.str(),__func__);
 	}
 
@@ -3180,6 +3250,11 @@ void HdbPPMySQL::store_array_string(string attr, vector<string> value_r, vector<
 		cout << __func__<< ": " << tmp.str() << endl;
 		if (mysql_stmt_close(pstmt))
 			cout << __func__<< ": failed while closing the statement" << ", err=" << mysql_stmt_error(pstmt) << endl;
+		delete [] is_null;
+		delete [] double_data;
+		delete [] value_data;
+		delete [] value_data_len;
+		delete [] int_data;
 		delete [] plog_bind;
 		Tango::Except::throw_exception(QUERY_ERROR,tmp.str(),__func__);
 	}
@@ -3197,9 +3272,20 @@ void HdbPPMySQL::store_array_string(string attr, vector<string> value_r, vector<
 		stringstream tmp;
 		tmp << "failed while closing the statement" << ", err=" << mysql_stmt_error(pstmt);
 		cout << __func__<< ": " << tmp.str() << endl;
+		delete [] is_null;
+		delete [] double_data;
+		delete [] value_data;
+		delete [] value_data_len;
+		delete [] int_data;
 		delete [] plog_bind;
 		Tango::Except::throw_exception(QUERY_ERROR,tmp.str(),__func__);
 	}
+	delete [] is_null;
+	delete [] double_data;
+	delete [] value_data;
+	delete [] value_data_len;
+	delete [] int_data;
+	delete [] plog_bind;
 	delete [] plog_bind;
 }
 
@@ -3713,7 +3799,17 @@ string HdbPPMySQL::add_domain(string str)
 		}
 		string::size_type	end2 = str.find(":", start);
 
-		string th = str.substr(start, end2);
+		int ret;
+	#ifdef _TG_WINDOWS_
+		WSADATA wsaData;
+		ret = WSAStartup(MAKEWORD(2, 2), &wsaData);
+		if (ret != 0) {
+			cout << __func__ << "WSAStartup failed, error code= : " << ret << endl;
+			return str;
+		}
+	#endif
+
+		string th = str.substr(start, end2-start);
 		string with_domain = str;;
 		struct addrinfo hints;
 //		hints.ai_family = AF_INET; // use AF_INET6 to force IPv6
@@ -3723,19 +3819,27 @@ string HdbPPMySQL::add_domain(string str)
 		hints.ai_socktype = SOCK_STREAM;
 		hints.ai_flags = AI_CANONNAME;
 		struct addrinfo *result, *rp;
-		int ret = getaddrinfo(th.c_str(), NULL, &hints, &result);
+		ret = getaddrinfo(th.c_str(), NULL, &hints, &result);
 		if (ret != 0)
 		{
 			fprintf(stderr, "getaddrinfo: %s\n", gai_strerror(ret));
+		#ifdef _TG_WINDOWS_
+			WSACleanup();
+		#endif
 			return str;
 		}
 
 		for (rp = result; rp != NULL; rp = rp->ai_next)
 		{
+			if(NULL == rp->ai_canonname) // the 2nd addrinfo's ai_canoname is NULL ?
+				break;
 			with_domain = string(rp->ai_canonname) + str.substr(end2);
 			cout << __func__ <<": found domain -> " << with_domain<<endl;
 		}
 		freeaddrinfo(result); // all done with this structure
+	#ifdef _TG_WINDOWS_
+		WSACleanup();
+	#endif
 		return with_domain;
 	}
 	else
